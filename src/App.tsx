@@ -16,10 +16,10 @@ const COLORS = {
   axisZ: [80, 200, 255, 255] as [number, number, number, number],     // Cyan
 }
 
-interface LineSegment {
+interface ColoredSegment {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
-  direction: 'x' | 'y'
+  color: [number, number, number, number]
 }
 
 interface AxisLine {
@@ -29,64 +29,104 @@ interface AxisLine {
 }
 
 /**
- * Convert mesh data to line segments for wireframe rendering
+ * Linear interpolation between two 3D points
  */
-function meshToLineSegments(
+function lerp3(
+  a: [number, number, number],
+  b: [number, number, number],
+  t: number
+): [number, number, number] {
+  return [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t,
+  ]
+}
+
+/**
+ * Convert mesh data to colored line segments, splitting at the Z cutoff plane.
+ * This achieves pixel-accurate cutoff by subdividing segments that cross the plane.
+ */
+function meshToColoredSegments(
   X: number[][],
   Y: number[][],
-  Z: number[][]
-): LineSegment[] {
-  const segments: LineSegment[] = []
+  Z: number[][],
+  zCutoff: number
+): ColoredSegment[] {
+  const segments: ColoredSegment[] = []
   const rows = Z.length
   const cols = Z[0].length
 
-  // X-direction lines (horizontal in grid space)
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols - 1; i++) {
+  const processSegment = (
+    source: [number, number, number],
+    target: [number, number, number],
+    direction: 'x' | 'y'
+  ) => {
+    const sourceZ = source[2]
+    const targetZ = target[2]
+    const sourceAbove = sourceZ > zCutoff
+    const targetAbove = targetZ > zCutoff
+
+    const colorBelow = direction === 'x' ? COLORS.xBelow : COLORS.yBelow
+    const colorAbove = direction === 'x' ? COLORS.xAbove : COLORS.yAbove
+
+    if (sourceAbove === targetAbove) {
+      // Entire segment is on one side of cutoff
       segments.push({
-        sourcePosition: [X[j][i], Y[j][i], Z[j][i]],
-        targetPosition: [X[j][i + 1], Y[j][i + 1], Z[j][i + 1]],
-        direction: 'x',
+        sourcePosition: source,
+        targetPosition: target,
+        color: sourceAbove ? colorAbove : colorBelow,
+      })
+    } else {
+      // Segment crosses the cutoff - split it
+      const t = (zCutoff - sourceZ) / (targetZ - sourceZ)
+      const midPoint = lerp3(source, target, t)
+
+      // First half (from source to midpoint)
+      segments.push({
+        sourcePosition: source,
+        targetPosition: midPoint,
+        color: sourceAbove ? colorAbove : colorBelow,
+      })
+
+      // Second half (from midpoint to target)
+      segments.push({
+        sourcePosition: midPoint,
+        targetPosition: target,
+        color: targetAbove ? colorAbove : colorBelow,
       })
     }
   }
 
-  // Y-direction lines (vertical in grid space)
+  // X-direction lines
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols - 1; i++) {
+      processSegment(
+        [X[j][i], Y[j][i], Z[j][i]],
+        [X[j][i + 1], Y[j][i + 1], Z[j][i + 1]],
+        'x'
+      )
+    }
+  }
+
+  // Y-direction lines
   for (let j = 0; j < rows - 1; j++) {
     for (let i = 0; i < cols; i++) {
-      segments.push({
-        sourcePosition: [X[j][i], Y[j][i], Z[j][i]],
-        targetPosition: [X[j + 1][i], Y[j + 1][i], Z[j + 1][i]],
-        direction: 'y',
-      })
+      processSegment(
+        [X[j][i], Y[j][i], Z[j][i]],
+        [X[j + 1][i], Y[j + 1][i], Z[j + 1][i]],
+        'y'
+      )
     }
   }
 
   return segments
 }
 
-/**
- * Get color for a line segment based on direction and Z cutoff
- */
-function getSegmentColor(
-  segment: LineSegment,
-  zCutoff: number
-): [number, number, number, number] {
-  // Use average Z of the segment for cutoff comparison
-  const avgZ = (segment.sourcePosition[2] + segment.targetPosition[2]) / 2
-  const isAbove = avgZ > zCutoff
-
-  if (segment.direction === 'x') {
-    return isAbove ? COLORS.xAbove : COLORS.xBelow
-  } else {
-    return isAbove ? COLORS.yAbove : COLORS.yBelow
-  }
-}
-
 const INITIAL_VIEW_STATE: OrbitViewState = {
   target: [0, 0, 0],
-  rotationX: 40,      // Elevation angle (looking down)
-  rotationOrbit: -45, // Azimuth rotation
+  rotationX: 40,
+  rotationOrbit: -45,
   zoom: 7,
   minZoom: 1,
   maxZoom: 10,
@@ -97,9 +137,8 @@ function App() {
 
   // Generate mesh data once
   const { X, Y, Z, zMin, zMax } = useMemo(() => {
-    const data = generateMeshData(-2, 2, -2, 2, 50) // Using 50x50 for performance
+    const data = generateMeshData(-2, 2, -2, 2, 100)
 
-    // Calculate Z range for slider bounds
     let min = Infinity
     let max = -Infinity
     for (const row of data.Z) {
@@ -112,10 +151,10 @@ function App() {
     return { ...data, zMin: min, zMax: max }
   }, [])
 
-  // Convert to line segments once
-  const lineSegments = useMemo(
-    () => meshToLineSegments(X, Y, Z),
-    [X, Y, Z]
+  // Create colored segments with cutoff splitting (recomputed when cutoff changes)
+  const coloredSegments = useMemo(
+    () => meshToColoredSegments(X, Y, Z, zCutoff),
+    [X, Y, Z, zCutoff]
   )
 
   // Create axis lines at the edges of the bounding box
@@ -124,19 +163,16 @@ function App() {
     const yMin = -2, yMax = 2
 
     return [
-      // X axis (red) - along the front edge at y=yMax, z=zMin
       {
         sourcePosition: [xMin, yMax, zMin],
         targetPosition: [xMax, yMax, zMin],
         color: COLORS.axisX,
       },
-      // Y axis (green) - along the left edge at x=xMin, z=zMin
       {
         sourcePosition: [xMin, yMin, zMin],
         targetPosition: [xMin, yMax, zMin],
         color: COLORS.axisY,
       },
-      // Z axis (cyan) - vertical at the back-left corner (xMin, yMin)
       {
         sourcePosition: [xMin, yMin, zMin],
         targetPosition: [xMin, yMin, zMax],
@@ -145,22 +181,16 @@ function App() {
     ]
   }, [zMin, zMax])
 
-  // Create layers
   const layers = [
-    // Wireframe surface
-    new LineLayer<LineSegment>({
+    new LineLayer<ColoredSegment>({
       id: 'wireframe',
-      data: lineSegments,
+      data: coloredSegments,
       getSourcePosition: (d) => d.sourcePosition,
       getTargetPosition: (d) => d.targetPosition,
-      getColor: (d) => getSegmentColor(d, zCutoff),
+      getColor: (d) => d.color,
       getWidth: 1,
       widthUnits: 'pixels',
-      updateTriggers: {
-        getColor: [zCutoff],
-      },
     }),
-    // Coordinate axes
     new LineLayer<AxisLine>({
       id: 'axes',
       data: axisLines,
@@ -181,7 +211,6 @@ function App() {
         layers={layers}
       />
 
-      {/* Controls overlay */}
       <div className="controls">
         <label>
           Z Cutoff: {zCutoff.toFixed(2)}
@@ -196,7 +225,6 @@ function App() {
         </label>
       </div>
 
-      {/* Legend */}
       <div className="legend">
         <div className="legend-title">Axes</div>
         <div className="legend-item">
