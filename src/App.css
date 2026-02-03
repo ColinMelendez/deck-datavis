@@ -3,6 +3,15 @@
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  transition: background-color 0.3s ease;
+}
+
+.app-container.dark {
+  background-color: #1a1a1a;
+}
+
+.app-container.light {
+  background-color: #f0f0f0;
 }
 
 /* Controls overlay - top left */
@@ -28,6 +37,23 @@
 .controls input[type="range"] {
   width: 100%;
   cursor: pointer;
+}
+
+.theme-toggle {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  width: 100%;
+}
+
+.theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 /* Legend - bottom right */
@@ -64,4 +90,65 @@
   height: 16px;
   border-radius: 2px;
   flex-shrink: 0;
+}
+
+.legend-gradient {
+  display: inline-block;
+  width: 40px;
+  height: 16px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.legend-gradient-item {
+  margin: 4px 0;
+}
+
+.legend-item-clickable {
+  cursor: pointer;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border-radius: 4px;
+  transition: background-color 0.15s ease;
+}
+
+.legend-item-clickable:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.gradient-editor {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+}
+
+.gradient-editor label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.gradient-editor input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.gradient-editor input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.gradient-editor input[type="color"]::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
 }
