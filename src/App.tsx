@@ -229,25 +229,14 @@ const INITIAL_VIEW_STATE: OrbitViewState = {
 }
 
 function App() {
-  const [zCutoff, setZCutoff] = useState(0)
+  const [zCutoffPercent, setZCutoffPercent] = useState(50)
+  const [editingZCutoff, setEditingZCutoff] = useState(false)
+  const [zCutoffInput, setZCutoffInput] = useState('')
   const [gradients, setGradients] = useState<GradientState>(DEFAULT_GRADIENTS)
   const [editingGradient, setEditingGradient] = useState<GradientKey | null>(null)
   const [darkMode, setDarkMode] = useState(true)
 
-  const updateGradientColor = useCallback(
-    (key: GradientKey, end: 'low' | 'high', hex: string) => {
-      setGradients(prev => ({
-        ...prev,
-        [key]: {
-          ...prev[key],
-          [end]: hexToRgb(hex),
-        },
-      }))
-    },
-    []
-  )
-
-  // Generate mesh data once
+  // Generate mesh data once (moved up so zMin/zMax are available for callbacks)
   const { X, Y, Z, zMin, zMax } = useMemo(() => {
     const data = generateMeshData(-2, 2, -2, 2, 100)
 
@@ -262,6 +251,35 @@ function App() {
 
     return { ...data, zMin: min, zMax: max }
   }, [])
+
+  // Convert percentage to actual z value
+  const zCutoff = zMin + (zCutoffPercent / 100) * (zMax - zMin)
+
+  const handleZCutoffSubmit = useCallback(() => {
+    const value = parseFloat(zCutoffInput)
+    if (!isNaN(value)) {
+      setZCutoffPercent(Math.max(0, Math.min(100, value)))
+    }
+    setEditingZCutoff(false)
+  }, [zCutoffInput])
+
+  const startEditingZCutoff = useCallback(() => {
+    setZCutoffInput(zCutoffPercent.toFixed(0))
+    setEditingZCutoff(true)
+  }, [zCutoffPercent])
+
+  const updateGradientColor = useCallback(
+    (key: GradientKey, end: 'low' | 'high', hex: string) => {
+      setGradients(prev => ({
+        ...prev,
+        [key]: {
+          ...prev[key],
+          [end]: hexToRgb(hex),
+        },
+      }))
+    },
+    []
+  )
 
   // Create colored segments with cutoff splitting (recomputed when cutoff or gradients change)
   const coloredSegments = useMemo(
@@ -324,17 +342,42 @@ function App() {
       />
 
       <div className="controls">
-        <label>
-          Z Cutoff: {zCutoff.toFixed(2)}
-          <input
-            type="range"
-            min={zMin}
-            max={zMax}
-            step={(zMax - zMin) / 100}
-            value={zCutoff}
-            onChange={(e) => setZCutoff(parseFloat(e.target.value))}
-          />
-        </label>
+        <div className="control-row">
+          <span>Z Cutoff: </span>
+          {editingZCutoff ? (
+            <input
+              type="number"
+              className="z-cutoff-input"
+              value={zCutoffInput}
+              onChange={(e) => setZCutoffInput(e.target.value)}
+              onBlur={handleZCutoffSubmit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleZCutoffSubmit()
+                if (e.key === 'Escape') setEditingZCutoff(false)
+              }}
+              step="1"
+              min="0"
+              max="100"
+              autoFocus
+            />
+          ) : (
+            <span
+              className="z-cutoff-value"
+              onClick={startEditingZCutoff}
+              title="Click to edit"
+            >
+              {zCutoffPercent.toFixed(0)}%
+            </span>
+          )}
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={zCutoffPercent}
+          onChange={(e) => setZCutoffPercent(parseFloat(e.target.value))}
+        />
         <button
           className="theme-toggle"
           onClick={() => setDarkMode(!darkMode)}
