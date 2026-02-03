@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import DeckGL, { type OrbitViewState } from 'deck.gl'
 import { LineLayer, OrbitView } from 'deck.gl'
+import { useQueryState, parseAsInteger, createParser } from 'nuqs'
 import { generateMeshData } from './generate-mesh-data'
 import './App.css'
 
@@ -38,6 +39,26 @@ const DEFAULT_GRADIENTS: GradientState = {
     high: [255, 200, 100, 255],   // Light Orange
   },
 }
+
+// Custom parser for gradient state (JSON serialization)
+const parseAsGradients = createParser<GradientState>({
+  parse: (value: string) => {
+    try {
+      const parsed = JSON.parse(value)
+      // Validate structure
+      const keys: GradientKey[] = ['xBelow', 'xAbove', 'yBelow', 'yAbove']
+      for (const key of keys) {
+        if (!parsed[key]?.low || !parsed[key]?.high) return null
+        if (!Array.isArray(parsed[key].low) || parsed[key].low.length !== 4) return null
+        if (!Array.isArray(parsed[key].high) || parsed[key].high.length !== 4) return null
+      }
+      return parsed as GradientState
+    } catch {
+      return null
+    }
+  },
+  serialize: (value: GradientState) => JSON.stringify(value),
+})
 
 // Convert RGB array to hex string for color picker
 function rgbToHex(color: Color): string {
@@ -229,10 +250,16 @@ const INITIAL_VIEW_STATE: OrbitViewState = {
 }
 
 function App() {
-  const [zCutoffPercent, setZCutoffPercent] = useState(50)
+  const [zCutoffPercent, setZCutoffPercent] = useQueryState(
+    'zCutoff',
+    parseAsInteger.withDefault(50)
+  )
   const [editingZCutoff, setEditingZCutoff] = useState(false)
   const [zCutoffInput, setZCutoffInput] = useState('')
-  const [gradients, setGradients] = useState<GradientState>(DEFAULT_GRADIENTS)
+  const [gradients, setGradients] = useQueryState(
+    'gradients',
+    parseAsGradients.withDefault(DEFAULT_GRADIENTS)
+  )
   const [editingGradient, setEditingGradient] = useState<GradientKey | null>(null)
   const [darkMode, setDarkMode] = useState(true)
 
@@ -261,7 +288,7 @@ function App() {
       setZCutoffPercent(Math.max(0, Math.min(100, value)))
     }
     setEditingZCutoff(false)
-  }, [zCutoffInput])
+  }, [zCutoffInput, setZCutoffPercent])
 
   const startEditingZCutoff = useCallback(() => {
     setZCutoffInput(zCutoffPercent.toFixed(0))
@@ -278,7 +305,7 @@ function App() {
         },
       }))
     },
-    []
+    [setGradients]
   )
 
   // Create colored segments with cutoff splitting (recomputed when cutoff or gradients change)
