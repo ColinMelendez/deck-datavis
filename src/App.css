@@ -34,6 +34,42 @@
   gap: 8px;
 }
 
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.z-cutoff-value {
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  font-family: monospace;
+  transition: background-color 0.15s ease;
+}
+
+.z-cutoff-value:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.z-cutoff-input {
+  width: 70px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #fff;
+  font-family: monospace;
+  font-size: 14px;
+}
+
+.z-cutoff-input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
 .controls input[type="range"] {
   width: 100%;
   cursor: pointer;
