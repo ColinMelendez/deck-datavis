@@ -30,3 +30,4 @@ dist-ssr
 
 #cloudflare
 .wrangler
+.dev.vars*
