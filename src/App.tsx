@@ -2,15 +2,31 @@ import { useState, useMemo, useCallback } from 'react'
 import DeckGL, { type OrbitViewState } from 'deck.gl'
 import { LineLayer, OrbitView } from 'deck.gl'
 import { useQueryState, parseAsInteger, createParser } from 'nuqs'
+import { useMode, modeOklch, modeRgb, interpolate, converter } from 'culori/fn'
 import { generateMeshData } from './generate-mesh-data'
 import './App.css'
 
-type Color = [number, number, number, number]
+// Register culori color modes
+// eslint-disable-next-line react-hooks/rules-of-hooks
+useMode(modeOklch)
+// eslint-disable-next-line react-hooks/rules-of-hooks
+useMode(modeRgb)
+
+// Create RGB converter after modes are registered
+const toRgb = converter('rgb')
+
+type RgbaArray = [number, number, number, number]
 type GradientKey = 'xBelow' | 'xAbove' | 'yBelow' | 'yAbove'
 
+interface OklchColor {
+  l: number // 0-1 (lightness)
+  c: number // 0-0.4 (chroma)
+  h: number // 0-360 (hue)
+}
+
 interface Gradient {
-  low: Color
-  high: Color
+  low: OklchColor
+  high: OklchColor
 }
 
 interface GradientState {
@@ -20,23 +36,38 @@ interface GradientState {
   yAbove: Gradient
 }
 
-// Default gradient endpoints for each semantic region
+// Convert OklchColor to RGB array for deck.gl
+const toRgbArray = (color: OklchColor): RgbaArray => {
+  const rgb = toRgb({ mode: 'oklch', l: color.l, c: color.c, h: color.h })!
+  return [
+    Math.round(Math.max(0, Math.min(1, rgb.r)) * 255),
+    Math.round(Math.max(0, Math.min(1, rgb.g)) * 255),
+    Math.round(Math.max(0, Math.min(1, rgb.b)) * 255),
+    255,
+  ]
+}
+
+// Convert OklchColor to CSS oklch() string for display
+const toOklchCss = (color: OklchColor): string =>
+  `oklch(${(color.l * 100).toFixed(0)}% ${color.c.toFixed(2)} ${color.h.toFixed(0)})`
+
+// Default gradient endpoints for each semantic region (OKLCH)
 const DEFAULT_GRADIENTS: GradientState = {
   xBelow: {
-    low: [20, 40, 120, 255],      // Dark Blue
-    high: [100, 149, 237, 255],   // Cornflower Blue
+    low: { l: 0.35, c: 0.15, h: 260 },  // Dark Blue
+    high: { l: 0.65, c: 0.12, h: 250 }, // Cornflower Blue
   },
   xAbove: {
-    low: [70, 130, 180, 255],     // Steel Blue
-    high: [173, 216, 230, 255],   // Light Blue
+    low: { l: 0.55, c: 0.10, h: 240 },  // Steel Blue
+    high: { l: 0.80, c: 0.08, h: 220 }, // Light Blue
   },
   yBelow: {
-    low: [139, 0, 0, 255],        // Dark Red
-    high: [255, 99, 71, 255],     // Tomato
+    low: { l: 0.40, c: 0.18, h: 25 },   // Dark Red
+    high: { l: 0.60, c: 0.18, h: 35 },  // Tomato
   },
   yAbove: {
-    low: [180, 90, 0, 255],       // Dark Orange
-    high: [255, 200, 100, 255],   // Light Orange
+    low: { l: 0.55, c: 0.16, h: 55 },   // Dark Orange
+    high: { l: 0.80, c: 0.14, h: 70 },  // Light Orange
   },
 }
 
@@ -45,12 +76,12 @@ const parseAsGradients = createParser<GradientState>({
   parse: (value: string) => {
     try {
       const parsed = JSON.parse(value)
-      // Validate structure
       const keys: GradientKey[] = ['xBelow', 'xAbove', 'yBelow', 'yAbove']
       for (const key of keys) {
         if (!parsed[key]?.low || !parsed[key]?.high) return null
-        if (!Array.isArray(parsed[key].low) || parsed[key].low.length !== 4) return null
-        if (!Array.isArray(parsed[key].high) || parsed[key].high.length !== 4) return null
+        const { low, high } = parsed[key]
+        if (typeof low.l !== 'number' || typeof low.c !== 'number' || typeof low.h !== 'number') return null
+        if (typeof high.l !== 'number' || typeof high.c !== 'number' || typeof high.h !== 'number') return null
       }
       return parsed as GradientState
     } catch {
@@ -60,53 +91,33 @@ const parseAsGradients = createParser<GradientState>({
   serialize: (value: GradientState) => JSON.stringify(value),
 })
 
-// Convert RGB array to hex string for color picker
-function rgbToHex(color: Color): string {
-  const [r, g, b] = color
-  return '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('')
-}
-
-// Convert hex string to RGB array
-function hexToRgb(hex: string): Color {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
-  if (!result) return [0, 0, 0, 255]
-  return [
-    parseInt(result[1], 16),
-    parseInt(result[2], 16),
-    parseInt(result[3], 16),
-    255,
-  ]
-}
-
-// Axis colors
+// Axis colors (static, no editing needed)
 const AXIS_COLORS = {
-  axisX: [255, 80, 80, 255] as Color,      // Red
-  axisY: [80, 200, 80, 255] as Color,      // Green
-  axisZ: [80, 200, 255, 255] as Color,     // Cyan
+  axisX: [255, 80, 80, 255] as RgbaArray,   // Red
+  axisY: [80, 200, 80, 255] as RgbaArray,   // Green
+  axisZ: [80, 200, 255, 255] as RgbaArray,  // Cyan
 }
 
-/**
- * Interpolate between two colors based on normalized t value (0-1)
- */
-function lerpColor(a: Color, b: Color, t: number): Color {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-    Math.round(a[3] + (b[3] - a[3]) * t),
-  ]
+// Interpolate between two OKLCH colors
+const lerpOklch = (a: OklchColor, b: OklchColor, t: number): OklchColor => {
+  const interp = interpolate([
+    { mode: 'oklch', l: a.l, c: a.c, h: a.h },
+    { mode: 'oklch', l: b.l, c: b.c, h: b.h },
+  ], 'oklch')
+  const result = interp(t)
+  return { l: result.l, c: result.c, h: result.h ?? 0 }
 }
 
 interface ColoredSegment {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
-  color: Color
+  color: RgbaArray
 }
 
 interface AxisLine {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
-  color: Color
+  color: RgbaArray
 }
 
 /**
@@ -149,9 +160,9 @@ function meshToColoredSegments(
   const getGradientColor = (
     z: number,
     gradient: Gradient
-  ): Color => {
+  ): RgbaArray => {
     const t = zRange > 0 ? (z - zMin) / zRange : 0.5
-    return lerpColor(gradient.low, gradient.high, t)
+    return toRgbArray(lerpOklch(gradient.low, gradient.high, t))
   }
 
   // Add a single small segment with color based on midpoint z
@@ -296,12 +307,15 @@ function App() {
   }, [zCutoffPercent])
 
   const updateGradientColor = useCallback(
-    (key: GradientKey, end: 'low' | 'high', hex: string) => {
+    (key: GradientKey, end: 'low' | 'high', channel: 'l' | 'c' | 'h', value: number) => {
       setGradients(prev => ({
         ...prev,
         [key]: {
           ...prev[key],
-          [end]: hexToRgb(hex),
+          [end]: {
+            ...prev[key][end],
+            [channel]: value,
+          },
         },
       }))
     },
@@ -442,29 +456,55 @@ function App() {
               <span
                 className="legend-gradient"
                 style={{
-                  background: `linear-gradient(to right, rgb(${gradients[key].low.slice(0, 3).join(',')}), rgb(${gradients[key].high.slice(0, 3).join(',')}))`
+                  background: `linear-gradient(to right, ${toOklchCss(gradients[key].low)}, ${toOklchCss(gradients[key].high)})`
                 }}
               />
               {label}
             </div>
             {editingGradient === key && (
               <div className="gradient-editor">
-                <label>
-                  Low Z
-                  <input
-                    type="color"
-                    value={rgbToHex(gradients[key].low)}
-                    onChange={(e) => updateGradientColor(key, 'low', e.target.value)}
-                  />
-                </label>
-                <label>
-                  High Z
-                  <input
-                    type="color"
-                    value={rgbToHex(gradients[key].high)}
-                    onChange={(e) => updateGradientColor(key, 'high', e.target.value)}
-                  />
-                </label>
+                {(['low', 'high'] as const).map(end => (
+                  <div key={end} className="gradient-endpoint">
+                    <span className="endpoint-label">{end === 'low' ? 'Low Z' : 'High Z'}</span>
+                    <div
+                      className="color-preview"
+                      style={{ background: toOklchCss(gradients[key][end]) }}
+                    />
+                    <label>
+                      L
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={gradients[key][end].l}
+                        onChange={(e) => updateGradientColor(key, end, 'l', parseFloat(e.target.value))}
+                      />
+                    </label>
+                    <label>
+                      C
+                      <input
+                        type="range"
+                        min={0}
+                        max={0.4}
+                        step={0.01}
+                        value={gradients[key][end].c}
+                        onChange={(e) => updateGradientColor(key, end, 'c', parseFloat(e.target.value))}
+                      />
+                    </label>
+                    <label>
+                      H
+                      <input
+                        type="range"
+                        min={0}
+                        max={360}
+                        step={1}
+                        value={gradients[key][end].h}
+                        onChange={(e) => updateGradientColor(key, end, 'h', parseFloat(e.target.value))}
+                      />
+                    </label>
+                  </div>
+                ))}
               </div>
             )}
           </div>
