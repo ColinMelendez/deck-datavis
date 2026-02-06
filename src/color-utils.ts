@@ -39,9 +39,16 @@ export type rgbColorBuff = readonly [number, number, number, number]
 export function hslToRgbBuff(hslColorIn: hslColorBuff, rgbColorOut: rgbColorBuff = [0, 0, 0, 255]): rgbColorBuff {
   // Unsafe: assumes h is in the range 0-360, s, and l inputs are in the range 0-1
 
+  // NOTE: perhaps we should just declare that everything is internally represented as 0-1 for all colors.
+  // That would save costs on conversions and several types of calculations line interpolation.
+  // It might have one drawback in making absolutely correct color space mapping more difficult in cases
+  // where multiple transformations are made in succession without ever needing to revert to a native format.
+  // or maybe not. much to think about.
   const normalizedHue = hslColorIn[0] / 360;
 
   // alpha unaffected
+  // NOTE: since we aren't normalizing the alpha consistently at the moment, this is technically broken,
+  // but we also aren't using it at all at the moment so whatever.
   // @ts-expect-error readonly array -- we are writing to the buffer
   rgbColorOut[3] = hslColorIn[3];
 

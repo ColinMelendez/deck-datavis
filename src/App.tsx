@@ -20,11 +20,28 @@ interface GradientState {
   yBelow: Gradient
 }
 
-const toRgb = (color: hslColorBuff): rgbColorBuff => hslToRgbBuff(color)
+// Pre-allocated pool of rgb color buffers to reduce GC pressure during rapid re-renders on color/cutoff changes.
+// The pool grows lazily to match peak demand, then stays stable.
+const colorPool: [number, number, number, number][] = []
+let colorPoolIndex = 0
+
+function resetColorPool() {
+  colorPoolIndex = 0
+}
+
+function acquireColorBuffer(): rgbColorBuff {
+  if (colorPoolIndex >= colorPool.length) {
+    colorPool.push([0, 0, 0, 255])
+  }
+  return colorPool[colorPoolIndex++]
+}
 
 // Convert hslColorBuff to CSS string for display
 const toHslCss = (color: hslColorBuff): string =>
   `hsl(${color[0]} ${color[1] * 100}% ${color[2] * 100}%)`
+
+const toRgbCss = (color: rgbColorBuff): string =>
+  `rgb(${color[0]} ${color[1]} ${color[2]})`
 
 // Linear interpolation between two HSL color buffers
 const lerpHsl = (a: hslColorBuff, b: hslColorBuff, t: number): hslColorBuff => [
@@ -55,7 +72,7 @@ const DEFAULT_GRADIENTS: GradientState = {
   },
 }
 
-// Custom parser for gradient state (JSON serialization)
+// Custom parser for gradient state ( GradientState -> JSON) for use in the URL query state.
 const parseAsGradients = createParser<GradientState>({
   parse: (value: string) => {
     try {
@@ -76,7 +93,7 @@ const parseAsGradients = createParser<GradientState>({
   serialize: (value: GradientState) => JSON.stringify(value),
 })
 
-// Axis colors (static, no editing needed)
+// Axis colors
 const AXIS_COLORS = {
   axisX: [255, 80, 80, 255] as rgbColorBuff,   // Red
   axisY: [80, 200, 80, 255] as rgbColorBuff,    // Green
@@ -126,18 +143,19 @@ function meshToColoredSegments(
   zMax: number,
   gradients: GradientState
 ): ColoredSegment[] {
+  resetColorPool()
   const segments: ColoredSegment[] = []
   const rows = Z.length
   const cols = Z[0].length
   const zRange = zMax - zMin
 
-  // Get gradient color for a given z value and gradient type
+  // Get gradient color for a given z value, writing into a pooled buffer
   const getGradientColor = (
     z: number,
     gradient: Gradient
   ): rgbColorBuff => {
     const t = zRange > 0 ? (z - zMin) / zRange : 0.5
-    return toRgb(lerpHsl(gradient.low, gradient.high, t))
+    return hslToRgbBuff(lerpHsl(gradient.low, gradient.high, t), acquireColorBuffer())
   }
 
   // Add a single small segment with color based on midpoint z
@@ -413,15 +431,15 @@ function App() {
       <div className="legend">
         <div className="legend-title">Axes</div>
         <div className="legend-item">
-          <span className="legend-color" style={{ backgroundColor: `rgb(${AXIS_COLORS.axisX.slice(0, 3).join(',')})` }} />
+          <span className="legend-color" style={{ backgroundColor: toRgbCss(AXIS_COLORS.axisX) }} />
           X axis
         </div>
         <div className="legend-item">
-          <span className="legend-color" style={{ backgroundColor: `rgb(${AXIS_COLORS.axisY.slice(0, 3).join(',')})` }} />
+          <span className="legend-color" style={{ backgroundColor: toRgbCss(AXIS_COLORS.axisY) }} />
           Y axis
         </div>
         <div className="legend-item">
-          <span className="legend-color" style={{ backgroundColor: `rgb(${AXIS_COLORS.axisZ.slice(0, 3).join(',')})` }} />
+          <span className="legend-color" style={{ backgroundColor: toRgbCss(AXIS_COLORS.axisZ) }} />
           Z axis
         </div>
         <div className="legend-title" style={{ marginTop: '12px' }}>Wireframe (click to edit)</div>

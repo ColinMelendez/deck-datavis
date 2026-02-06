@@ -13,7 +13,7 @@
   "dependencies": {
     "@deck.gl/core": "^9.2.6",
     "@luma.gl/engine": "^9.2.6",
-    "culori": "^4.0.2",
+    "color-bits": "^1.1.1",
     "deck.gl": "^9.2.6",
     "nuqs": "^2.8.8",
     "react": "^19.2.0",
