@@ -4,64 +4,54 @@ import { LineLayer, OrbitView } from 'deck.gl'
 import { useQueryState, parseAsInteger, createParser } from 'nuqs'
 import { generateMeshData } from './generate-mesh-data'
 import './App.css'
-import { hslToRgbFast } from './utils'
+import { hslToRgbBuff, type hslColorBuff, type rgbColorBuff } from './color-utils'
 
-type RgbaArray = [number, number, number, number]
 type GradientKey = 'xBelow' | 'xAbove' | 'yBelow' | 'yAbove'
 
-// HSL color representation (intuitive controls)
-interface HslColor {
-  h: number // 0-360 (hue)
-  s: number // 0-100 (saturation %)
-  l: number // 0-100 (lightness %)
-}
-
 interface Gradient {
-  low: HslColor
-  high: HslColor
+  high: hslColorBuff
+  low: hslColorBuff
 }
 
 interface GradientState {
-  xBelow: Gradient
   xAbove: Gradient
-  yBelow: Gradient
+  xBelow: Gradient
   yAbove: Gradient
+  yBelow: Gradient
 }
 
-const toRgbArray = (color: HslColor): RgbaArray => {
-  const buff: number[] = [0, 0, 0, 255]
-  hslToRgbFast(color.h / 360, color.s / 100, color.l / 100, buff)
-  return buff as RgbaArray
-}
+const toRgb = (color: hslColorBuff): rgbColorBuff => hslToRgbBuff(color)
 
-// Convert HslColor to CSS string for display
-const toHslCss = (color: HslColor): string =>
-  `hsl(${color.h}, ${color.s}%, ${color.l}%)`
+// Convert hslColorBuff to CSS string for display
+const toHslCss = (color: hslColorBuff): string =>
+  `hsl(${color[0]} ${color[1] * 100}% ${color[2] * 100}%)`
 
-// Linear interpolation between two HSL colors
-const lerpHsl = (a: HslColor, b: HslColor, t: number): HslColor => ({
-  h: a.h + (b.h - a.h) * t,
-  s: a.s + (b.s - a.s) * t,
-  l: a.l + (b.l - a.l) * t,
-})
+// Linear interpolation between two HSL color buffers
+const lerpHsl = (a: hslColorBuff, b: hslColorBuff, t: number): hslColorBuff => [
+  a[0] + (b[0] - a[0]) * t,
+  a[1] + (b[1] - a[1]) * t,
+  a[2] + (b[2] - a[2]) * t,
+  a[3],
+]
 
-// Default gradient endpoints for each semantic region (HSL)
+// Default gradient endpoints for each semantic region
+// hslColorBuff: [h, s, l, alpha] — h in 0-360, s/l in 0-1, alpha in 0-255
 const DEFAULT_GRADIENTS: GradientState = {
   xBelow: {
-    low: { h: 220, s: 70, l: 25 },   // Dark Blue
-    high: { h: 220, s: 60, l: 55 },  // Cornflower Blue
+    high: [220, 0.60, 0.55, 255],  // Cornflower Blue
+    low: [220, 0.70, 0.25, 255],  // Dark Blue
   },
   xAbove: {
-    low: { h: 200, s: 50, l: 45 },   // Steel Blue
-    high: { h: 200, s: 40, l: 75 },  // Light Blue
+    high: [200, 0.40, 0.75, 255],  // Light Blue
+    low: [200, 0.50, 0.45, 255],  // Steel Blue
   },
   yBelow: {
-    low: { h: 0, s: 70, l: 30 },     // Dark Red
-    high: { h: 10, s: 75, l: 50 },   // Tomato
+    high: [10, 0.75, 0.50, 255],   // Tomato
+    low: [0, 0.70, 0.30, 255],    // Dark Red
   },
   yAbove: {
-    low: { h: 30, s: 80, l: 45 },    // Dark Orange
-    high: { h: 40, s: 70, l: 70 },   // Light Orange
+    high: [40, 0.70, 0.70, 255],   // Light Orange
+    low: [30, 0.80, 0.45, 255],   // Dark Orange
   },
 }
 
@@ -72,10 +62,11 @@ const parseAsGradients = createParser<GradientState>({
       const parsed = JSON.parse(value)
       const keys: GradientKey[] = ['xBelow', 'xAbove', 'yBelow', 'yAbove']
       for (const key of keys) {
-        if (!parsed[key]?.low || !parsed[key]?.high) return null
-        const { low, high } = parsed[key]
-        if (typeof low.h !== 'number' || typeof low.s !== 'number' || typeof low.l !== 'number') return null
-        if (typeof high.h !== 'number' || typeof high.s !== 'number' || typeof high.l !== 'number') return null
+        if (!Array.isArray(parsed[key]?.low) || parsed[key].low.length !== 4) return null
+        if (!Array.isArray(parsed[key]?.high) || parsed[key].high.length !== 4) return null
+        for (const val of [...parsed[key].low, ...parsed[key].high]) {
+          if (typeof val !== 'number') return null
+        }
       }
       return parsed as GradientState
     } catch {
@@ -87,21 +78,21 @@ const parseAsGradients = createParser<GradientState>({
 
 // Axis colors (static, no editing needed)
 const AXIS_COLORS = {
-  axisX: [255, 80, 80, 255] as RgbaArray,   // Red
-  axisY: [80, 200, 80, 255] as RgbaArray,   // Green
-  axisZ: [80, 200, 255, 255] as RgbaArray,  // Cyan
+  axisX: [255, 80, 80, 255] as rgbColorBuff,   // Red
+  axisY: [80, 200, 80, 255] as rgbColorBuff,    // Green
+  axisZ: [80, 200, 255, 255] as rgbColorBuff,   // Cyan
 }
 
 interface ColoredSegment {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
-  color: RgbaArray
+  color: rgbColorBuff
 }
 
 interface AxisLine {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
-  color: RgbaArray
+  color: rgbColorBuff
 }
 
 /**
@@ -144,9 +135,9 @@ function meshToColoredSegments(
   const getGradientColor = (
     z: number,
     gradient: Gradient
-  ): RgbaArray => {
+  ): rgbColorBuff => {
     const t = zRange > 0 ? (z - zMin) / zRange : 0.5
-    return toRgbArray(lerpHsl(gradient.low, gradient.high, t))
+    return toRgb(lerpHsl(gradient.low, gradient.high, t))
   }
 
   // Add a single small segment with color based on midpoint z
@@ -244,6 +235,13 @@ const INITIAL_VIEW_STATE: OrbitViewState = {
   maxZoom: 12,
 }
 
+// Channel metadata for the HSL sliders: display range and scale factor from 0-1 internal
+const HSL_CHANNELS = [
+  { label: 'H', max: 360, scale: 1 },
+  { label: 'S', max: 100, scale: 100 },
+  { label: 'L', max: 100, scale: 100 },
+] as const
+
 function App() {
   const [zCutoffPercent, setZCutoffPercent] = useQueryState(
     'zCutoff',
@@ -291,17 +289,18 @@ function App() {
   }, [zCutoffPercent])
 
   const updateGradientColor = useCallback(
-    (key: GradientKey, end: 'low' | 'high', channel: 'h' | 's' | 'l', value: number) => {
-      setGradients(prev => ({
-        ...prev,
-        [key]: {
-          ...prev[key],
-          [end]: {
-            ...prev[key][end],
-            [channel]: value,
+    (key: GradientKey, end: 'low' | 'high', index: number, value: number) => {
+      setGradients(prev => {
+        const newColor: [number, number, number, number] = [...prev[key][end]]
+        newColor[index] = value
+        return {
+          ...prev,
+          [key]: {
+            ...prev[key],
+            [end]: newColor,
           },
-        },
-      }))
+        }
+      })
     },
     [setGradients]
   )
@@ -342,7 +341,7 @@ function App() {
       data: coloredSegments,
       getSourcePosition: (d) => d.sourcePosition,
       getTargetPosition: (d) => d.targetPosition,
-      getColor: (d) => d.color,
+      getColor: (d) => d.color as [number, number, number, number],
       getWidth: 1,
       widthUnits: 'pixels',
     }),
@@ -351,7 +350,7 @@ function App() {
       data: axisLines,
       getSourcePosition: (d) => d.sourcePosition,
       getTargetPosition: (d) => d.targetPosition,
-      getColor: (d) => d.color,
+      getColor: (d) => d.color as [number, number, number, number],
       getWidth: 2,
       widthUnits: 'pixels',
     }),
@@ -447,46 +446,26 @@ function App() {
             </div>
             {editingGradient === key && (
               <div className="gradient-editor">
-                {(['low', 'high'] as const).map(end => (
+                {(['high', 'low'] as const).map(end => (
                   <div key={end} className="gradient-endpoint">
                     <span className="endpoint-label">{end === 'low' ? 'Low Z' : 'High Z'}</span>
                     <div
                       className="color-preview"
                       style={{ background: toHslCss(gradients[key][end]) }}
                     />
-                    <label>
-                      H
-                      <input
-                        type="range"
-                        min={0}
-                        max={360}
-                        step={1}
-                        value={gradients[key][end].h}
-                        onChange={(e) => updateGradientColor(key, end, 'h', parseFloat(e.target.value))}
-                      />
-                    </label>
-                    <label>
-                      S
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={gradients[key][end].s}
-                        onChange={(e) => updateGradientColor(key, end, 's', parseFloat(e.target.value))}
-                      />
-                    </label>
-                    <label>
-                      L
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={gradients[key][end].l}
-                        onChange={(e) => updateGradientColor(key, end, 'l', parseFloat(e.target.value))}
-                      />
-                    </label>
+                    {HSL_CHANNELS.map((ch, i) => (
+                      <label key={ch.label}>
+                        {ch.label}
+                        <input
+                          type="range"
+                          min={0}
+                          max={ch.max}
+                          step={1}
+                          value={Math.round(gradients[key][end][i] * ch.scale)}
+                          onChange={(e) => updateGradientColor(key, end, i, parseFloat(e.target.value) / ch.scale)}
+                        />
+                      </label>
+                    ))}
                   </div>
                 ))}
               </div>

@@ -1,4 +1,16 @@
 
+
+interface HslColorStruct {
+  h: number
+  s: number
+  l: number
+}
+
+interface RgbColorStruct {
+  r: number
+  g: number
+  b: number
+}
 /**
  *  Convert from rgb values to hsl values
  *
@@ -72,15 +84,25 @@ export function hslToRgbFast(h: number, s: number, l: number, out: number[]) {
   } else {
     const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
     const p = 2 * l - q;
-    out[0] = Math.round(hueToRGB(p, q, h + 1 / 3) * 255);
-    out[1] = Math.round(hueToRGB(p, q, h) * 255);
-    out[2] = Math.round(hueToRGB(p, q, h - 1 / 3) * 255);
+    out[0] = Math.round(computeRGBComponent(p, q, h + 1 / 3) * 255);
+    out[1] = Math.round(computeRGBComponent(p, q, h) * 255);
+    out[2] = Math.round(computeRGBComponent(p, q, h - 1 / 3) * 255);
   }
 
   return out
 }
 
-function hueToRGB(p: number, q: number, t: number) {
+/**
+ * Computes a single RGB component value from normalized hue and HSL-derived p/q values.
+ * This is a helper function used in HSL to RGB conversion, called three times
+ * with different hue offsets to compute R, G, and B components.
+ *
+ * @param p - Intermediate value derived from lightness (min RGB value)
+ * @param q - Intermediate value derived from lightness and saturation (max RGB value)
+ * @param t - Normalized hue value (0-1) with offset for the specific RGB component
+ * @returns RGB component value in the range [0, 1]
+ */
+function computeRGBComponent(p: number, q: number, t: number) {
   if (t < 0) {
     t += 1
   }
@@ -97,4 +119,60 @@ function hueToRGB(p: number, q: number, t: number) {
     return p + (q - p) * (2 / 3 - t) * 6
   }
   return p
+}
+
+
+export function hslToRgbFastStruct(hslColorIn: HslColorStruct, rgbColorOut: RgbColorStruct) {
+  // Unsafe: assumes h, s, and l inputs are in the range 0-1
+
+  // if saturation is 0, the color only exists on the black/white axis defined by it's lightness
+  if (hslColorIn.s === 0) {
+    rgbColorOut.r = rgbColorOut.g = rgbColorOut.b = Math.round(hslColorIn.l * 255);
+  } else {
+    const q = hslColorIn.l < 0.5 ? hslColorIn.l * (1 + hslColorIn.s) : hslColorIn.l + hslColorIn.s - hslColorIn.l * hslColorIn.s;
+    const p = 2 * hslColorIn.l - q;
+    rgbColorOut.r = Math.round(computeRGBComponent(p, q, hslColorIn.h + 1 / 3) * 255);
+    rgbColorOut.g = Math.round(computeRGBComponent(p, q, hslColorIn.h) * 255);
+    rgbColorOut.b = Math.round(computeRGBComponent(p, q, hslColorIn.h - 1 / 3) * 255);
+  }
+
+  return rgbColorOut
+}
+
+
+// Maybe this is how we can do the design of the buffers in the library.
+// just make then readonly Arrays and then use the unsafe writes to the buffer internally.
+// Technically users could do the same and break the type system, which is a bit of a footgun,
+// but it's honestly probably an acceptable footgun.
+
+export type hslColorBuff = readonly [number, number, number, number]
+export type rgbColorBuff = readonly [number, number, number, number]
+
+export function hslToRgbBuff(hslColorIn: hslColorBuff, rgbColorOut: rgbColorBuff = [0, 0, 0, 255]): rgbColorBuff {
+  // Unsafe: assumes h, s, and l inputs are in the range 0-1
+
+  // alpha unaffected
+  // @ts-expect-error readonly array -- we are writing to the buffer
+  rgbColorOut[3] = hslColorIn[3];
+
+  // if saturation is 0, the color only exists on the black/white axis defined by it's lightness
+  if (hslColorIn[1] === 0) {
+    // @ts-expect-error readonly array -- we are writing to the buffer
+    rgbColorOut[0] = rgbColorOut[1] = rgbColorOut[2]
+      = Math.round(hslColorIn[2] * 255);
+  } else {
+    const q = hslColorIn[2] < 0.5 ? hslColorIn[2] * (1 + hslColorIn[1]) : hslColorIn[2] + hslColorIn[1] - hslColorIn[2] * hslColorIn[1];
+    const p = 2 * hslColorIn[2] - q;
+    // @ts-expect-error readonly array -- we are writing to the buffer
+    rgbColorOut[0]
+      = Math.round(computeRGBComponent(p, q, hslColorIn[0] + 1 / 3) * 255);
+    // @ts-expect-error readonly array -- we are writing to the buffer
+    rgbColorOut[1]
+      = Math.round(computeRGBComponent(p, q, hslColorIn[0]) * 255);
+    // @ts-expect-error readonly array -- we are writing to the buffer
+    rgbColorOut[2]
+      = Math.round(computeRGBComponent(p, q, hslColorIn[0] - 1 / 3) * 255);
+  }
+
+  return rgbColorOut;
 }
