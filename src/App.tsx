@@ -295,19 +295,49 @@ function App() {
     return { ...data, zMin: min, zMax: max }
   }, [])
 
-  // Original mesh vertices for hover picking
-  const meshVertices = useMemo(() => {
-    const vertices: { position: [number, number, number] }[] = []
-    for (let j = 0; j < X.length; j++) {
-      for (let i = 0; i < X[0].length; i++) {
-        vertices.push({ position: [X[j][i], Y[j][i], Z[j][i]] })
-      }
-    }
-    return vertices
-  }, [X, Y, Z])
-
   // Convert percentage to actual z value
   const zCutoff = zMin + (zCutoffPercent / 100) * (zMax - zMin)
+
+  // Original mesh vertices + z-cutoff intersection points for hover picking
+  const hoverVertices = useMemo(() => {
+    const rows = X.length
+    const cols = X[0].length
+    const vertices: { position: [number, number, number] }[] = []
+
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        vertices.push({ position: [X[j][i], Y[j][i], Z[j][i]] })
+
+        // Check X-direction edge for cutoff crossing
+        if (i < cols - 1) {
+          const z0 = Z[j][i], z1 = Z[j][i + 1]
+          if ((z0 > zCutoff) !== (z1 > zCutoff)) {
+            const t = (zCutoff - z0) / (z1 - z0)
+            vertices.push({ position: [
+              X[j][i] + (X[j][i + 1] - X[j][i]) * t,
+              Y[j][i] + (Y[j][i + 1] - Y[j][i]) * t,
+              zCutoff,
+            ]})
+          }
+        }
+
+        // Check Y-direction edge for cutoff crossing
+        if (j < rows - 1) {
+          const z0 = Z[j][i], z1 = Z[j + 1][i]
+          if ((z0 > zCutoff) !== (z1 > zCutoff)) {
+            const t = (zCutoff - z0) / (z1 - z0)
+            vertices.push({ position: [
+              X[j][i] + (X[j + 1][i] - X[j][i]) * t,
+              Y[j][i] + (Y[j + 1][i] - Y[j][i]) * t,
+              zCutoff,
+            ]})
+          }
+        }
+      }
+    }
+
+    return vertices
+  }, [X, Y, Z, zCutoff])
 
   const handleZCutoffSubmit = useCallback(() => {
     const value = parseFloat(zCutoffInput)
@@ -390,7 +420,7 @@ function App() {
     }),
     new PointCloudLayer({
       id: 'mesh-vertices',
-      data: meshVertices,
+      data: hoverVertices,
       getPosition: (d: { position: [number, number, number] }) => d.position,
       getColor: [255, 255, 255, 0],
       pointSize: 8,
