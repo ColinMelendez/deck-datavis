@@ -276,7 +276,7 @@ function App() {
   const [hoverInfo, setHoverInfo] = useState<{
     x: number
     y: number
-    object: ColoredSegment
+    object: { position: [number, number, number] }
   } | null>(null)
 
   // Generate mesh data once (moved up so zMin/zMax are available for callbacks)
@@ -294,6 +294,17 @@ function App() {
 
     return { ...data, zMin: min, zMax: max }
   }, [])
+
+  // Original mesh vertices for hover picking
+  const meshVertices = useMemo(() => {
+    const vertices: { position: [number, number, number] }[] = []
+    for (let j = 0; j < X.length; j++) {
+      for (let i = 0; i < X[0].length; i++) {
+        vertices.push({ position: [X[j][i], Y[j][i], Z[j][i]] })
+      }
+    }
+    return vertices
+  }, [X, Y, Z])
 
   // Convert percentage to actual z value
   const zCutoff = zMin + (zCutoffPercent / 100) * (zMax - zMin)
@@ -367,14 +378,6 @@ function App() {
       getColor: (data) => data.color as [number, number, number, number],
       getWidth: 1,
       widthUnits: 'pixels',
-      pickable: true,
-      onHover: (info) => {
-        if (info.object) {
-          setHoverInfo({ x: info.x, y: info.y, object: info.object })
-        } else {
-          setHoverInfo(null)
-        }
-      },
     }),
     new LineLayer<AxisLine>({
       id: 'axes',
@@ -385,18 +388,27 @@ function App() {
       getWidth: 2,
       widthUnits: 'pixels',
     }),
+    new PointCloudLayer({
+      id: 'mesh-vertices',
+      data: meshVertices,
+      getPosition: (d: { position: [number, number, number] }) => d.position,
+      getColor: [255, 255, 255, 0],
+      pointSize: 8,
+      sizeUnits: 'pixels',
+      pickable: true,
+      onHover: (info) => {
+        if (info.object) {
+          setHoverInfo({ x: info.x, y: info.y, object: info.object })
+        } else {
+          setHoverInfo(null)
+        }
+      },
+    }),
     ...(hoverInfo ? [new PointCloudLayer({
-      id: 'hover-point',
-      data: [{
-        position: [
-          (hoverInfo.object.sourcePosition[0] + hoverInfo.object.targetPosition[0]) / 2,
-          (hoverInfo.object.sourcePosition[1] + hoverInfo.object.targetPosition[1]) / 2,
-          (hoverInfo.object.sourcePosition[2] + hoverInfo.object.targetPosition[2]) / 2,
-        ],
-        color: [255, 255, 255],
-      }],
-      getPosition: (d: { position: number[] }) => d.position as [number, number, number],
-      getColor: (d: { color: number[] }) => d.color as [number, number, number],
+      id: 'hover-marker',
+      data: [hoverInfo.object],
+      getPosition: (d: { position: [number, number, number] }) => d.position,
+      getColor: [255, 255, 255],
       pointSize: 6,
       sizeUnits: 'pixels',
     })] : []),
@@ -520,24 +532,16 @@ function App() {
         ))}
       </div>
 
-      {hoverInfo && (() => {
-        const { sourcePosition: s, targetPosition: t } = hoverInfo.object
-        const mid: [number, number, number] = [
-          (s[0] + t[0]) / 2,
-          (s[1] + t[1]) / 2,
-          (s[2] + t[2]) / 2,
-        ]
-        return (
-          <div
-            className="tooltip"
-            style={{ left: hoverInfo.x + 12, top: hoverInfo.y - 12 }}
-          >
-            <div>X: {mid[0].toFixed(3)}</div>
-            <div>Y: {mid[1].toFixed(3)}</div>
-            <div>Z: {mid[2].toFixed(3)}</div>
-          </div>
-        )
-      })()}
+      {hoverInfo && (
+        <div
+          className="tooltip"
+          style={{ left: hoverInfo.x + 12, top: hoverInfo.y - 12 }}
+        >
+          <div>X: {hoverInfo.object.position[0].toFixed(3)}</div>
+          <div>Y: {hoverInfo.object.position[1].toFixed(3)}</div>
+          <div>Z: {hoverInfo.object.position[2].toFixed(3)}</div>
+        </div>
+      )}
     </div>
   )
 }
