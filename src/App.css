@@ -210,3 +210,8 @@
   line-height: 1.5;
   white-space: nowrap;
 }
+
+.tooltip-pinned {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}

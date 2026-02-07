@@ -278,6 +278,11 @@ function App() {
     y: number
     object: { position: [number, number, number] }
   } | null>(null)
+  const [pinnedInfo, setPinnedInfo] = useState<{
+    x: number
+    y: number
+    object: { position: [number, number, number] }
+  } | null>(null)
 
   // Generate mesh data once (moved up so zMin/zMax are available for callbacks)
   const { X, Y, Z, zMin, zMax } = useMemo(() => {
@@ -313,11 +318,13 @@ function App() {
           const z0 = Z[j][i], z1 = Z[j][i + 1]
           if ((z0 > zCutoff) !== (z1 > zCutoff)) {
             const t = (zCutoff - z0) / (z1 - z0)
-            vertices.push({ position: [
-              X[j][i] + (X[j][i + 1] - X[j][i]) * t,
-              Y[j][i] + (Y[j][i + 1] - Y[j][i]) * t,
-              zCutoff,
-            ]})
+            vertices.push({
+              position: [
+                X[j][i] + (X[j][i + 1] - X[j][i]) * t,
+                Y[j][i] + (Y[j][i + 1] - Y[j][i]) * t,
+                zCutoff,
+              ]
+            })
           }
         }
 
@@ -326,11 +333,13 @@ function App() {
           const z0 = Z[j][i], z1 = Z[j + 1][i]
           if ((z0 > zCutoff) !== (z1 > zCutoff)) {
             const t = (zCutoff - z0) / (z1 - z0)
-            vertices.push({ position: [
-              X[j][i] + (X[j + 1][i] - X[j][i]) * t,
-              Y[j][i] + (Y[j + 1][i] - Y[j][i]) * t,
-              zCutoff,
-            ]})
+            vertices.push({
+              position: [
+                X[j][i] + (X[j + 1][i] - X[j][i]) * t,
+                Y[j][i] + (Y[j + 1][i] - Y[j][i]) * t,
+                zCutoff,
+              ]
+            })
           }
         }
       }
@@ -433,10 +442,15 @@ function App() {
           setHoverInfo(null)
         }
       },
+      onClick: (info) => {
+        if (info.object) {
+          setPinnedInfo({ x: info.x, y: info.y, object: info.object })
+        }
+      },
     }),
-    ...(hoverInfo ? [new PointCloudLayer({
+    ...((pinnedInfo || hoverInfo) ? [new PointCloudLayer({
       id: 'hover-marker',
-      data: [hoverInfo.object],
+      data: [(pinnedInfo ?? hoverInfo)!.object],
       getPosition: (d: { position: [number, number, number] }) => d.position,
       getColor: [255, 255, 255],
       pointSize: 6,
@@ -452,6 +466,11 @@ function App() {
         initialViewState={INITIAL_VIEW_STATE}
         controller={true}
         layers={layers}
+        onClick={(info) => {
+          if (!info.object) {
+            setPinnedInfo(null)
+          }
+        }}
       />
 
       <div className="controls">
@@ -563,16 +582,20 @@ function App() {
         ))}
       </div>
 
-      {hoverInfo && (
-        <div
-          className="tooltip"
-          style={{ left: hoverInfo.x + 12, top: hoverInfo.y - 12 }}
-        >
-          <div>X: {hoverInfo.object.position[0].toFixed(3)}</div>
-          <div>Y: {hoverInfo.object.position[1].toFixed(3)}</div>
-          <div>Z: {hoverInfo.object.position[2].toFixed(3)}</div>
-        </div>
-      )}
+      {(() => {
+        const info = pinnedInfo ?? hoverInfo
+        if (!info) return null
+        return (
+          <div
+            className={`tooltip ${pinnedInfo ? 'tooltip-pinned' : ''}`}
+            style={{ left: info.x + 12, top: info.y - 12 }}
+          >
+            <div>X: {info.object.position[0].toFixed(3)}</div>
+            <div>Y: {info.object.position[1].toFixed(3)}</div>
+            <div>Z: {info.object.position[2].toFixed(3)}</div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
