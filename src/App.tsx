@@ -104,6 +104,12 @@ interface ColoredSegment {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
   color: rgbColorBuff
+  lineKey: string
+}
+
+interface HoverVertex {
+  position: [number, number, number]
+  lineKeys: string[]
 }
 
 interface AxisLine {
@@ -162,13 +168,15 @@ function meshToColoredSegments(
   const addSubSegment = (
     p1: [number, number, number],
     p2: [number, number, number],
-    gradient: Gradient
+    gradient: Gradient,
+    lineKey: string
   ) => {
     const midZ = (p1[2] + p2[2]) / 2
     segments.push({
       sourcePosition: p1,
       targetPosition: p2,
       color: getGradientColor(midZ, gradient),
+      lineKey,
     })
   }
 
@@ -176,21 +184,23 @@ function meshToColoredSegments(
   const subdivideSegment = (
     source: [number, number, number],
     target: [number, number, number],
-    gradient: Gradient
+    gradient: Gradient,
+    lineKey: string
   ) => {
     for (let i = 0; i < GRADIENT_SUBDIVISIONS; i++) {
       const t1 = i / GRADIENT_SUBDIVISIONS
       const t2 = (i + 1) / GRADIENT_SUBDIVISIONS
       const p1 = lerp3(source, target, t1)
       const p2 = lerp3(source, target, t2)
-      addSubSegment(p1, p2, gradient)
+      addSubSegment(p1, p2, gradient, lineKey)
     }
   }
 
   const processSegment = (
     source: [number, number, number],
     target: [number, number, number],
-    direction: 'x' | 'y'
+    direction: 'x' | 'y',
+    lineKey: string
   ) => {
     const sourceZ = source[2]
     const targetZ = target[2]
@@ -203,7 +213,7 @@ function meshToColoredSegments(
     if (sourceAbove === targetAbove) {
       // Entire segment is on one side of cutoff
       const gradient = sourceAbove ? gradientAbove : gradientBelow
-      subdivideSegment(source, target, gradient)
+      subdivideSegment(source, target, gradient, lineKey)
     } else {
       // Segment crosses the cutoff - split it first, then subdivide each half
       const t = (zCutoff - sourceZ) / (targetZ - sourceZ)
@@ -211,11 +221,11 @@ function meshToColoredSegments(
 
       // First half (from source to midpoint)
       const sourceGradient = sourceAbove ? gradientAbove : gradientBelow
-      subdivideSegment(source, midPoint, sourceGradient)
+      subdivideSegment(source, midPoint, sourceGradient, lineKey)
 
       // Second half (from midpoint to target)
       const targetGradient = targetAbove ? gradientAbove : gradientBelow
-      subdivideSegment(midPoint, target, targetGradient)
+      subdivideSegment(midPoint, target, targetGradient, lineKey)
     }
   }
 
@@ -225,7 +235,8 @@ function meshToColoredSegments(
       processSegment(
         [X[j][i], Y[j][i], Z[j][i]],
         [X[j][i + 1], Y[j][i + 1], Z[j][i + 1]],
-        'x'
+        'x',
+        `row-${j}`
       )
     }
   }
@@ -236,7 +247,8 @@ function meshToColoredSegments(
       processSegment(
         [X[j][i], Y[j][i], Z[j][i]],
         [X[j + 1][i], Y[j + 1][i], Z[j + 1][i]],
-        'y'
+        'y',
+        `col-${i}`
       )
     }
   }
@@ -276,13 +288,14 @@ function App() {
   const [hoverInfo, setHoverInfo] = useState<{
     x: number
     y: number
-    object: { position: [number, number, number] }
+    object: HoverVertex
   } | null>(null)
   const [pinnedInfo, setPinnedInfo] = useState<{
     x: number
     y: number
-    object: { position: [number, number, number] }
+    object: HoverVertex
   } | null>(null)
+  const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set())
 
   // Generate mesh data once (moved up so zMin/zMax are available for callbacks)
   const { X, Y, Z, zMin, zMax } = useMemo(() => {
@@ -307,11 +320,14 @@ function App() {
   const hoverVertices = useMemo(() => {
     const rows = X.length
     const cols = X[0].length
-    const vertices: { position: [number, number, number] }[] = []
+    const vertices: HoverVertex[] = []
 
     for (let j = 0; j < rows; j++) {
       for (let i = 0; i < cols; i++) {
-        vertices.push({ position: [X[j][i], Y[j][i], Z[j][i]] })
+        vertices.push({
+          position: [X[j][i], Y[j][i], Z[j][i]],
+          lineKeys: [`row-${j}`, `col-${i}`],
+        })
 
         // Check X-direction edge for cutoff crossing
         if (i < cols - 1) {
@@ -323,7 +339,8 @@ function App() {
                 X[j][i] + (X[j][i + 1] - X[j][i]) * t,
                 Y[j][i] + (Y[j][i + 1] - Y[j][i]) * t,
                 zCutoff,
-              ]
+              ],
+              lineKeys: [`row-${j}`],
             })
           }
         }
@@ -338,7 +355,8 @@ function App() {
                 X[j][i] + (X[j + 1][i] - X[j][i]) * t,
                 Y[j][i] + (Y[j + 1][i] - Y[j][i]) * t,
                 zCutoff,
-              ]
+              ],
+              lineKeys: [`col-${i}`],
             })
           }
         }
@@ -408,6 +426,11 @@ function App() {
     ]
   }, [zMin, zMax])
 
+  const highlightedSegments = useMemo(() => {
+    if (highlightedEdges.size === 0) return []
+    return coloredSegments.filter(s => highlightedEdges.has(s.lineKey))
+  }, [coloredSegments, highlightedEdges])
+
   const layers = [
     new LineLayer<ColoredSegment>({
       id: 'wireframe',
@@ -418,6 +441,15 @@ function App() {
       getWidth: 1,
       widthUnits: 'pixels',
     }),
+    ...(highlightedSegments.length > 0 ? [new LineLayer<ColoredSegment>({
+      id: 'wireframe-highlight',
+      data: highlightedSegments,
+      getSourcePosition: (data) => data.sourcePosition,
+      getTargetPosition: (data) => data.targetPosition,
+      getColor: (data) => data.color as [number, number, number, number],
+      getWidth: 4,
+      widthUnits: 'pixels',
+    })] : []),
     new LineLayer<AxisLine>({
       id: 'axes',
       data: axisLines,
@@ -585,6 +617,7 @@ function App() {
       {(() => {
         const info = pinnedInfo ?? hoverInfo
         if (!info) return null
+        const isHighlighted = info.object.lineKeys.every(k => highlightedEdges.has(k))
         return (
           <div
             className={`tooltip ${pinnedInfo ? 'tooltip-pinned' : ''}`}
@@ -593,6 +626,25 @@ function App() {
             <div>X: {info.object.position[0].toFixed(3)}</div>
             <div>Y: {info.object.position[1].toFixed(3)}</div>
             <div>Z: {info.object.position[2].toFixed(3)}</div>
+            {pinnedInfo && (
+              <label className="highlight-toggle">
+                <input
+                  type="checkbox"
+                  checked={isHighlighted}
+                  onChange={(e) => {
+                    setHighlightedEdges(prev => {
+                      const next = new Set(prev)
+                      for (const key of info.object.lineKeys) {
+                        if (e.target.checked) next.add(key)
+                        else next.delete(key)
+                      }
+                      return next
+                    })
+                  }}
+                />
+                Highlight
+              </label>
+            )}
           </div>
         )
       })()}
