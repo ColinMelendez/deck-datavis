@@ -441,6 +441,7 @@ function App() {
       getColor: [255, 255, 255],
       pointSize: 6,
       sizeUnits: 'pixels',
+      parameters: { depthTest: false },
     })] : []),
   ]
 
