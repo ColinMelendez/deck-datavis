@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react'
 import DeckGL, { type OrbitViewState } from 'deck.gl'
-import { LineLayer, OrbitView } from 'deck.gl'
+import { LineLayer, OrbitView, PointCloudLayer } from 'deck.gl'
 import { useQueryState, parseAsInteger, createParser } from 'nuqs'
 import { generateMeshData } from './generate-mesh-data'
 import './App.css'
@@ -273,6 +273,11 @@ function App() {
   )
   const [editingGradient, setEditingGradient] = useState<GradientKey | null>(null)
   const [darkMode, setDarkMode] = useState(true)
+  const [hoverInfo, setHoverInfo] = useState<{
+    x: number
+    y: number
+    object: ColoredSegment
+  } | null>(null)
 
   // Generate mesh data once (moved up so zMin/zMax are available for callbacks)
   const { X, Y, Z, zMin, zMax } = useMemo(() => {
@@ -357,21 +362,44 @@ function App() {
     new LineLayer<ColoredSegment>({
       id: 'wireframe',
       data: coloredSegments,
-      getSourcePosition: (d) => d.sourcePosition,
-      getTargetPosition: (d) => d.targetPosition,
-      getColor: (d) => d.color as [number, number, number, number],
+      getSourcePosition: (data) => data.sourcePosition,
+      getTargetPosition: (data) => data.targetPosition,
+      getColor: (data) => data.color as [number, number, number, number],
       getWidth: 1,
       widthUnits: 'pixels',
+      pickable: true,
+      onHover: (info) => {
+        if (info.object) {
+          setHoverInfo({ x: info.x, y: info.y, object: info.object })
+        } else {
+          setHoverInfo(null)
+        }
+      },
     }),
     new LineLayer<AxisLine>({
       id: 'axes',
       data: axisLines,
-      getSourcePosition: (d) => d.sourcePosition,
-      getTargetPosition: (d) => d.targetPosition,
-      getColor: (d) => d.color as [number, number, number, number],
+      getSourcePosition: (data) => data.sourcePosition,
+      getTargetPosition: (data) => data.targetPosition,
+      getColor: (data) => data.color as [number, number, number, number],
       getWidth: 2,
       widthUnits: 'pixels',
     }),
+    ...(hoverInfo ? [new PointCloudLayer({
+      id: 'hover-point',
+      data: [{
+        position: [
+          (hoverInfo.object.sourcePosition[0] + hoverInfo.object.targetPosition[0]) / 2,
+          (hoverInfo.object.sourcePosition[1] + hoverInfo.object.targetPosition[1]) / 2,
+          (hoverInfo.object.sourcePosition[2] + hoverInfo.object.targetPosition[2]) / 2,
+        ],
+        color: [255, 255, 255],
+      }],
+      getPosition: (d: { position: number[] }) => d.position as [number, number, number],
+      getColor: (d: { color: number[] }) => d.color as [number, number, number],
+      pointSize: 6,
+      sizeUnits: 'pixels',
+    })] : []),
   ]
 
   return (
@@ -491,6 +519,25 @@ function App() {
           </div>
         ))}
       </div>
+
+      {hoverInfo && (() => {
+        const { sourcePosition: s, targetPosition: t } = hoverInfo.object
+        const mid: [number, number, number] = [
+          (s[0] + t[0]) / 2,
+          (s[1] + t[1]) / 2,
+          (s[2] + t[2]) / 2,
+        ]
+        return (
+          <div
+            className="tooltip"
+            style={{ left: hoverInfo.x + 12, top: hoverInfo.y - 12 }}
+          >
+            <div>X: {mid[0].toFixed(3)}</div>
+            <div>Y: {mid[1].toFixed(3)}</div>
+            <div>Z: {mid[2].toFixed(3)}</div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

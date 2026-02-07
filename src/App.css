@@ -195,3 +195,18 @@
   cursor: pointer;
   accent-color: #fff;
 }
+
+/* Hover tooltip */
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  background: rgba(30, 30, 30, 0.92);
+  color: #fff;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: monospace;
+  line-height: 1.5;
+  white-space: nowrap;
+}
