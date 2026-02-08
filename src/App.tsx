@@ -20,21 +20,41 @@ interface GradientState {
   yBelow: Gradient
 }
 
-// Pre-allocated pool of rgb color buffers to reduce GC pressure during rapid re-renders on color/cutoff changes.
-// The pool grows lazily to match peak demand, then stays stable.
-const colorPool: [number, number, number, number][] = []
-let colorPoolIndex = 0
-
-function resetColorPool() {
-  colorPoolIndex = 0
+// Pre-allocated typed-array buffers for segment data, eliminating per-segment
+// object allocation. Buffers grow lazily to match peak demand, then stay stable.
+interface SegmentBuffers {
+  sourcePositions: Float32Array
+  targetPositions: Float32Array
+  colors: Uint8ClampedArray
+  lineKeys: string[]
+  count: number
 }
 
-function acquireColorBuffer(): rgbColorBuff {
-  if (colorPoolIndex >= colorPool.length) {
-    colorPool.push([0, 0, 0, 255])
+let _segBuf: SegmentBuffers | null = null
+
+function getSegmentBuffers(capacity: number): SegmentBuffers {
+  if (!_segBuf || _segBuf.lineKeys.length < capacity) {
+    _segBuf = {
+      sourcePositions: new Float32Array(capacity * 3),
+      targetPositions: new Float32Array(capacity * 3),
+      colors: new Uint8ClampedArray(capacity * 4),
+      lineKeys: new Array(capacity),
+      count: 0,
+    }
   }
-  return colorPool[colorPoolIndex++]
+  _segBuf.count = 0
+  return _segBuf
 }
+
+// Temporary HSL/RGB buffers reused across all color computations
+const _tempHsl: [number, number, number, number] = [0, 0, 0, 255]
+const _tempRgb: [number, number, number, number] = [0, 0, 0, 255]
+
+// Interned line key strings to avoid repeated template literal allocation
+const _rowKeys: string[] = []
+const _colKeys: string[] = []
+function rowKey(j: number): string { return _rowKeys[j] ??= `row-${j}` }
+function colKey(i: number): string { return _colKeys[i] ??= `col-${i}` }
 
 // Convert hslColorBuff to CSS string for display
 const toHslCss = (color: hslColorBuff): string =>
@@ -43,13 +63,6 @@ const toHslCss = (color: hslColorBuff): string =>
 const toRgbCss = (color: rgbColorBuff): string =>
   `rgb(${color[0]} ${color[1]} ${color[2]})`
 
-// Linear interpolation between two HSL color buffers
-const lerpHsl = (a: hslColorBuff, b: hslColorBuff, t: number): hslColorBuff => [
-  a[0] + (b[0] - a[0]) * t,
-  a[1] + (b[1] - a[1]) * t,
-  a[2] + (b[2] - a[2]) * t,
-  a[3],
-]
 
 // Default gradient endpoints for each semantic region
 // hslColorBuff: [h, s, l, alpha] — h in 0-360, s/l in 0-1, alpha in 0-255
@@ -100,13 +113,6 @@ const AXIS_COLORS = {
   axisZ: [80, 200, 255, 255] as rgbColorBuff,   // Cyan
 }
 
-interface ColoredSegment {
-  sourcePosition: [number, number, number]
-  targetPosition: [number, number, number]
-  color: rgbColorBuff
-  lineKey: string
-}
-
 interface HoverVertex {
   position: [number, number, number]
   lineKeys: string[]
@@ -118,29 +124,15 @@ interface AxisLine {
   color: rgbColorBuff
 }
 
-/**
- * Linear interpolation between two 3D points
- */
-function lerp3(
-  a: [number, number, number],
-  b: [number, number, number],
-  t: number
-): [number, number, number] {
-  return [
-    a[0] + (b[0] - a[0]) * t,
-    a[1] + (b[1] - a[1]) * t,
-    a[2] + (b[2] - a[2]) * t,
-  ]
-}
-
 // Number of subdivisions per mesh edge for smooth gradients
 const GRADIENT_SUBDIVISIONS = 8
 
 /**
- * Convert mesh data to colored line segments, splitting at the Z cutoff plane.
- * Segments are subdivided to create smooth z-based color gradients.
+ * Fill pre-allocated typed-array buffers with colored line segments,
+ * splitting at the Z cutoff plane and subdividing for smooth gradients.
+ * Returns a SegmentBuffers struct — zero per-segment object allocation.
  */
-function meshToColoredSegments(
+function fillSegmentBuffers(
   X: number[][],
   Y: number[][],
   Z: number[][],
@@ -148,95 +140,100 @@ function meshToColoredSegments(
   zMin: number,
   zMax: number,
   gradients: GradientState
-): ColoredSegment[] {
-  resetColorPool()
-  const segments: ColoredSegment[] = []
+): SegmentBuffers {
   const rows = Z.length
   const cols = Z[0].length
   const zRange = zMax - zMin
 
-  // Get gradient color for a given z value, writing into a pooled buffer
-  const getGradientColor = (
-    z: number,
-    gradient: Gradient
-  ): rgbColorBuff => {
-    const t = zRange > 0 ? (z - zMin) / zRange : 0.5
-    return hslToRgbBuff(lerpHsl(gradient.low, gradient.high, t), acquireColorBuffer())
+  // Worst case: every edge crosses cutoff → 2 halves × GRADIENT_SUBDIVISIONS each
+  const maxEdges = rows * (cols - 1) + (rows - 1) * cols
+  const maxSegments = maxEdges * 2 * GRADIENT_SUBDIVISIONS
+  const buf = getSegmentBuffers(maxSegments)
+  let idx = 0
+
+  // Write one sub-segment directly into the typed arrays
+  const writeSubSegment = (
+    p1x: number, p1y: number, p1z: number,
+    p2x: number, p2y: number, p2z: number,
+    gradient: Gradient,
+    key: string
+  ) => {
+    const sOff = idx * 3
+    buf.sourcePositions[sOff] = p1x
+    buf.sourcePositions[sOff + 1] = p1y
+    buf.sourcePositions[sOff + 2] = p1z
+    buf.targetPositions[sOff] = p2x
+    buf.targetPositions[sOff + 1] = p2y
+    buf.targetPositions[sOff + 2] = p2z
+
+    // Color from gradient based on midpoint z
+    const t = zRange > 0 ? ((p1z + p2z) / 2 - zMin) / zRange : 0.5
+    _tempHsl[0] = gradient.low[0] + (gradient.high[0] - gradient.low[0]) * t
+    _tempHsl[1] = gradient.low[1] + (gradient.high[1] - gradient.low[1]) * t
+    _tempHsl[2] = gradient.low[2] + (gradient.high[2] - gradient.low[2]) * t
+    _tempHsl[3] = gradient.low[3]
+    hslToRgbBuff(_tempHsl, _tempRgb)
+
+    const cOff = idx * 4
+    buf.colors[cOff] = _tempRgb[0]
+    buf.colors[cOff + 1] = _tempRgb[1]
+    buf.colors[cOff + 2] = _tempRgb[2]
+    buf.colors[cOff + 3] = _tempRgb[3]
+
+    buf.lineKeys[idx] = key
+    idx++
   }
 
-  // Add a single small segment with color based on midpoint z
-  const addSubSegment = (
-    p1: [number, number, number],
-    p2: [number, number, number],
+  // Subdivide a segment into GRADIENT_SUBDIVISIONS pieces (all scalar, no tuple allocation)
+  const subdivide = (
+    sx: number, sy: number, sz: number,
+    tx: number, ty: number, tz: number,
     gradient: Gradient,
-    lineKey: string
+    key: string
   ) => {
-    const midZ = (p1[2] + p2[2]) / 2
-    segments.push({
-      sourcePosition: p1,
-      targetPosition: p2,
-      color: getGradientColor(midZ, gradient),
-      lineKey,
-    })
-  }
-
-  // Process a segment that's entirely on one side of the cutoff
-  const subdivideSegment = (
-    source: [number, number, number],
-    target: [number, number, number],
-    gradient: Gradient,
-    lineKey: string
-  ) => {
-    for (let i = 0; i < GRADIENT_SUBDIVISIONS; i++) {
-      const t1 = i / GRADIENT_SUBDIVISIONS
-      const t2 = (i + 1) / GRADIENT_SUBDIVISIONS
-      const p1 = lerp3(source, target, t1)
-      const p2 = lerp3(source, target, t2)
-      addSubSegment(p1, p2, gradient, lineKey)
+    const dx = tx - sx, dy = ty - sy, dz = tz - sz
+    for (let k = 0; k < GRADIENT_SUBDIVISIONS; k++) {
+      const t1 = k / GRADIENT_SUBDIVISIONS
+      const t2 = (k + 1) / GRADIENT_SUBDIVISIONS
+      writeSubSegment(
+        sx + dx * t1, sy + dy * t1, sz + dz * t1,
+        sx + dx * t2, sy + dy * t2, sz + dz * t2,
+        gradient, key
+      )
     }
   }
 
-  const processSegment = (
-    source: [number, number, number],
-    target: [number, number, number],
+  const processEdge = (
+    sx: number, sy: number, sz: number,
+    tx: number, ty: number, tz: number,
     direction: 'x' | 'y',
-    lineKey: string
+    key: string
   ) => {
-    const sourceZ = source[2]
-    const targetZ = target[2]
-    const sourceAbove = sourceZ > zCutoff
-    const targetAbove = targetZ > zCutoff
+    const sAbove = sz > zCutoff
+    const tAbove = tz > zCutoff
+    const gradBelow = direction === 'x' ? gradients.xBelow : gradients.yBelow
+    const gradAbove = direction === 'x' ? gradients.xAbove : gradients.yAbove
 
-    const gradientBelow = direction === 'x' ? gradients.xBelow : gradients.yBelow
-    const gradientAbove = direction === 'x' ? gradients.xAbove : gradients.yAbove
-
-    if (sourceAbove === targetAbove) {
-      // Entire segment is on one side of cutoff
-      const gradient = sourceAbove ? gradientAbove : gradientBelow
-      subdivideSegment(source, target, gradient, lineKey)
+    if (sAbove === tAbove) {
+      subdivide(sx, sy, sz, tx, ty, tz, sAbove ? gradAbove : gradBelow, key)
     } else {
-      // Segment crosses the cutoff - split it first, then subdivide each half
-      const t = (zCutoff - sourceZ) / (targetZ - sourceZ)
-      const midPoint = lerp3(source, target, t)
-
-      // First half (from source to midpoint)
-      const sourceGradient = sourceAbove ? gradientAbove : gradientBelow
-      subdivideSegment(source, midPoint, sourceGradient, lineKey)
-
-      // Second half (from midpoint to target)
-      const targetGradient = targetAbove ? gradientAbove : gradientBelow
-      subdivideSegment(midPoint, target, targetGradient, lineKey)
+      // Split at cutoff crossing
+      const f = (zCutoff - sz) / (tz - sz)
+      const mx = sx + (tx - sx) * f
+      const my = sy + (ty - sy) * f
+      subdivide(sx, sy, sz, mx, my, zCutoff, sAbove ? gradAbove : gradBelow, key)
+      subdivide(mx, my, zCutoff, tx, ty, tz, tAbove ? gradAbove : gradBelow, key)
     }
   }
 
   // X-direction lines
   for (let j = 0; j < rows; j++) {
+    const rk = rowKey(j)
     for (let i = 0; i < cols - 1; i++) {
-      processSegment(
-        [X[j][i], Y[j][i], Z[j][i]],
-        [X[j][i + 1], Y[j][i + 1], Z[j][i + 1]],
-        'x',
-        `row-${j}`
+      processEdge(
+        X[j][i], Y[j][i], Z[j][i],
+        X[j][i + 1], Y[j][i + 1], Z[j][i + 1],
+        'x', rk
       )
     }
   }
@@ -244,16 +241,23 @@ function meshToColoredSegments(
   // Y-direction lines
   for (let j = 0; j < rows - 1; j++) {
     for (let i = 0; i < cols; i++) {
-      processSegment(
-        [X[j][i], Y[j][i], Z[j][i]],
-        [X[j + 1][i], Y[j + 1][i], Z[j + 1][i]],
-        'y',
-        `col-${i}`
+      processEdge(
+        X[j][i], Y[j][i], Z[j][i],
+        X[j + 1][i], Y[j + 1][i], Z[j + 1][i],
+        'y', colKey(i)
       )
     }
   }
 
-  return segments
+  buf.count = idx
+  // Return a new wrapper so React memo detects the change (typed arrays are reused)
+  return {
+    sourcePositions: buf.sourcePositions,
+    targetPositions: buf.targetPositions,
+    colors: buf.colors,
+    lineKeys: buf.lineKeys,
+    count: idx,
+  }
 }
 
 const INITIAL_VIEW_STATE: OrbitViewState = {
@@ -396,9 +400,9 @@ function App() {
     [setGradients]
   )
 
-  // Create colored segments with cutoff splitting (recomputed when cutoff or gradients change)
-  const coloredSegments = useMemo(
-    () => meshToColoredSegments(X, Y, Z, zCutoff, zMin, zMax, gradients),
+  // Fill typed-array segment buffers (recomputed when cutoff or gradients change)
+  const segmentBuffers = useMemo(
+    () => fillSegmentBuffers(X, Y, Z, zCutoff, zMin, zMax, gradients),
     [X, Y, Z, zCutoff, zMin, zMax, gradients]
   )
 
@@ -426,27 +430,58 @@ function App() {
     ]
   }, [zMin, zMax])
 
-  const highlightedSegments = useMemo(() => {
-    if (highlightedEdges.size === 0) return []
-    return coloredSegments.filter(s => highlightedEdges.has(s.lineKey))
-  }, [coloredSegments, highlightedEdges])
+  const highlightBuffers = useMemo(() => {
+    if (highlightedEdges.size === 0) return null
+    const src = segmentBuffers
+    const indices: number[] = []
+    for (let i = 0; i < src.count; i++) {
+      if (highlightedEdges.has(src.lineKeys[i])) indices.push(i)
+    }
+    if (indices.length === 0) return null
+    const n = indices.length
+    const sp = new Float32Array(n * 3)
+    const tp = new Float32Array(n * 3)
+    const c = new Uint8ClampedArray(n * 4)
+    for (let j = 0; j < n; j++) {
+      const i = indices[j]
+      const s3 = i * 3, d3 = j * 3
+      sp[d3] = src.sourcePositions[s3]; sp[d3 + 1] = src.sourcePositions[s3 + 1]; sp[d3 + 2] = src.sourcePositions[s3 + 2]
+      tp[d3] = src.targetPositions[s3]; tp[d3 + 1] = src.targetPositions[s3 + 1]; tp[d3 + 2] = src.targetPositions[s3 + 2]
+      const s4 = i * 4, d4 = j * 4
+      c[d4] = src.colors[s4]; c[d4 + 1] = src.colors[s4 + 1]; c[d4 + 2] = src.colors[s4 + 2]; c[d4 + 3] = src.colors[s4 + 3]
+    }
+    return { sourcePositions: sp, targetPositions: tp, colors: c, count: n }
+  }, [segmentBuffers, highlightedEdges])
 
   const layers = [
-    new LineLayer<ColoredSegment>({
+    new LineLayer({
       id: 'wireframe',
-      data: coloredSegments,
-      getSourcePosition: (data) => data.sourcePosition,
-      getTargetPosition: (data) => data.targetPosition,
-      getColor: (data) => data.color as [number, number, number, number],
+      data: {
+        length: segmentBuffers.count,
+        attributes: {
+          getSourcePosition: { value: segmentBuffers.sourcePositions, size: 3 },
+          getTargetPosition: { value: segmentBuffers.targetPositions, size: 3 },
+          getColor: { value: segmentBuffers.colors, size: 4 },
+        },
+      },
       getWidth: 1,
       widthUnits: 'pixels',
+      updateTriggers: {
+        getSourcePosition: [zCutoff],
+        getTargetPosition: [zCutoff],
+        getColor: [zCutoff, gradients],
+      },
     }),
-    ...(highlightedSegments.length > 0 ? [new LineLayer<ColoredSegment>({
+    ...(highlightBuffers ? [new LineLayer({
       id: 'wireframe-highlight',
-      data: highlightedSegments,
-      getSourcePosition: (data) => data.sourcePosition,
-      getTargetPosition: (data) => data.targetPosition,
-      getColor: (data) => data.color as [number, number, number, number],
+      data: {
+        length: highlightBuffers.count,
+        attributes: {
+          getSourcePosition: { value: highlightBuffers.sourcePositions, size: 3 },
+          getTargetPosition: { value: highlightBuffers.targetPositions, size: 3 },
+          getColor: { value: highlightBuffers.colors, size: 4 },
+        },
+      },
       getWidth: 4,
       widthUnits: 'pixels',
     })] : []),
