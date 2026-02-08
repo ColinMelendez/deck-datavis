@@ -8,12 +8,14 @@ import { hslToRgbBuff, type hslColorBuff, type rgbColorBuff } from './color-util
 
 type GradientKey = 'xBelow' | 'xAbove' | 'yBelow' | 'yAbove'
 
+// A gradient object defined by a high and low endpoint in HSL space.
 interface Gradient {
   high: hslColorBuff
   low: hslColorBuff
 }
 
-interface GradientState {
+// The active set of gradients.
+interface ActiveGradientsState {
   xAbove: Gradient
   xBelow: Gradient
   yAbove: Gradient
@@ -46,15 +48,11 @@ function getSegmentBuffers(capacity: number): SegmentBuffers {
   return _segBuf
 }
 
-// Temporary HSL/RGB buffers reused across all color computations
-const _tempHsl: [number, number, number, number] = [0, 0, 0, 255]
-const _tempRgb: [number, number, number, number] = [0, 0, 0, 255]
-
 // Interned line key strings to avoid repeated template literal allocation
 const _rowKeys: string[] = []
 const _colKeys: string[] = []
-function rowKey(j: number): string { return _rowKeys[j] ??= `row-${j}` }
-function colKey(i: number): string { return _colKeys[i] ??= `col-${i}` }
+const rowKey = (j: number): string => _rowKeys[j] ??= `row-${j}`
+const colKey = (i: number): string => _colKeys[i] ??= `col-${i}`
 
 // Convert hslColorBuff to CSS string for display
 const toHslCss = (color: hslColorBuff): string =>
@@ -66,7 +64,7 @@ const toRgbCss = (color: rgbColorBuff): string =>
 
 // Default gradient endpoints for each semantic region
 // hslColorBuff: [h, s, l, alpha] — h in 0-360, s/l in 0-1, alpha in 0-255
-const DEFAULT_GRADIENTS: GradientState = {
+const DEFAULT_GRADIENTS: ActiveGradientsState = {
   xBelow: {
     high: [220, 0.60, 0.55, 255],  // Cornflower Blue
     low: [220, 0.70, 0.25, 255],  // Dark Blue
@@ -86,7 +84,7 @@ const DEFAULT_GRADIENTS: GradientState = {
 }
 
 // Custom parser for gradient state ( GradientState -> JSON) for use in the URL query state.
-const parseAsGradients = createParser<GradientState>({
+const gradientsStateParser = createParser<ActiveGradientsState>({
   parse: (value: string) => {
     try {
       const parsed = JSON.parse(value)
@@ -98,26 +96,34 @@ const parseAsGradients = createParser<GradientState>({
           if (typeof val !== 'number') return null
         }
       }
-      return parsed as GradientState
+      return parsed as ActiveGradientsState
     } catch {
       return null
     }
   },
-  serialize: (value: GradientState) => JSON.stringify(value),
+  serialize: (value: ActiveGradientsState) => JSON.stringify(value),
 })
 
-// Axis colors
 const AXIS_COLORS = {
-  axisX: [255, 80, 80, 255] as rgbColorBuff,   // Red
-  axisY: [80, 200, 80, 255] as rgbColorBuff,    // Green
-  axisZ: [80, 200, 255, 255] as rgbColorBuff,   // Cyan
+  axisX: [255, 80, 80, 255] as rgbColorBuff,
+  axisY: [80, 200, 80, 255] as rgbColorBuff,
+  axisZ: [80, 200, 255, 255] as rgbColorBuff,
 }
 
+// Constituents of a layer that exist for targeting with hover tooltips.
 interface HoverVertex {
   position: [number, number, number]
   lineKeys: string[]
 }
 
+// Location and associated vertex being hovered over.
+interface HoverPoint {
+  x: number
+  y: number
+  object: HoverVertex
+}
+
+// Constituents of the axes layer; basically just for rendering the lines representing the graph axes.
 interface AxisLine {
   sourcePosition: [number, number, number]
   targetPosition: [number, number, number]
@@ -127,10 +133,13 @@ interface AxisLine {
 // Number of subdivisions per mesh edge for smooth gradients
 const GRADIENT_SUBDIVISIONS = 8
 
+
+
 /**
  * Fill pre-allocated typed-array buffers with colored line segments,
  * splitting at the Z cutoff plane and subdividing for smooth gradients.
- * Returns a SegmentBuffers struct — zero per-segment object allocation.
+ *
+ * The id of the returned object is new on every call, but the underlying typed arrays are reused.
  */
 function fillSegmentBuffers(
   X: number[][],
@@ -139,7 +148,7 @@ function fillSegmentBuffers(
   zCutoff: number,
   zMin: number,
   zMax: number,
-  gradients: GradientState
+  gradients: ActiveGradientsState
 ): SegmentBuffers {
   const rows = Z.length
   const cols = Z[0].length
@@ -150,6 +159,10 @@ function fillSegmentBuffers(
   const maxSegments = maxEdges * 2 * GRADIENT_SUBDIVISIONS
   const buf = getSegmentBuffers(maxSegments)
   let idx = 0
+
+  // Temporary HSL/RGB buffers reused across all color computations
+  const _tempHsl: [number, number, number, number] = [0, 0, 0, 255]
+  const _tempRgb: [number, number, number, number] = [0, 0, 0, 255]
 
   // Write one sub-segment directly into the typed arrays
   const writeSubSegment = (
@@ -215,6 +228,7 @@ function fillSegmentBuffers(
     const gradAbove = direction === 'x' ? gradients.xAbove : gradients.yAbove
 
     if (sAbove === tAbove) {
+      // Both endpoints on the same side -> subdivide normally with one gradient
       subdivide(sx, sy, sz, tx, ty, tz, sAbove ? gradAbove : gradBelow, key)
     } else {
       // Split at cutoff crossing
@@ -250,7 +264,7 @@ function fillSegmentBuffers(
   }
 
   buf.count = idx
-  // Return a new wrapper so React memo detects the change (typed arrays are reused)
+
   return {
     sourcePositions: buf.sourcePositions,
     targetPositions: buf.targetPositions,
@@ -270,38 +284,40 @@ const INITIAL_VIEW_STATE: OrbitViewState = {
 }
 
 // Channel metadata for the HSL sliders: display range and scale factor from 0-1 internal
+// NOTE: this is a bit of an awkward artifact of the way the color conversion function was designed.
+// ideally we would make this cleaner and ust use the value we want directly instead of having these
+// rather unnecessary scaling factors, but they've been convenient for development/experimentation.
 const HSL_CHANNELS = [
   { label: 'H', max: 360, scale: 1 },
   { label: 'S', max: 100, scale: 100 },
   { label: 'L', max: 100, scale: 100 },
 ] as const
 
+// NOTE: certainly should be split up into 2-4 smaller components, but whatever.
 function App() {
-  const [zCutoffPercent, setZCutoffPercent] = useQueryState(
-    'zCutoff',
+  const [darkMode, setDarkMode] = useState(true)
+
+  // URL query-parameter-backed states
+  const [zCutoffPercent, setZCutoffPercent] = useQueryState('zCutoff',
     parseAsInteger.withDefault(50)
   )
-  const [editingZCutoff, setEditingZCutoff] = useState(false)
-  const [zCutoffInput, setZCutoffInput] = useState('')
-  const [gradients, setGradients] = useQueryState(
-    'gradients',
-    parseAsGradients.withDefault(DEFAULT_GRADIENTS)
+  const [gradients, setGradients] = useQueryState('gradients',
+    gradientsStateParser.withDefault(DEFAULT_GRADIENTS)
   )
-  const [editingGradient, setEditingGradient] = useState<GradientKey | null>(null)
-  const [darkMode, setDarkMode] = useState(true)
-  const [hoverInfo, setHoverInfo] = useState<{
-    x: number
-    y: number
-    object: HoverVertex
-  } | null>(null)
-  const [pinnedInfo, setPinnedInfo] = useState<{
-    x: number
-    y: number
-    object: HoverVertex
-  } | null>(null)
-  const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set())
 
-  // Generate mesh data once (moved up so zMin/zMax are available for callbacks)
+  // Editing states
+  const [editingZCutoff, setEditingZCutoff] = useState(false)
+  const [editingGradient, setEditingGradient] = useState<GradientKey | null>(null)
+
+  const [zCutoffInput, setZCutoffInput] = useState('')
+  const [highlightedEdges, setHighlightedEdges] = useState(new Set<string>())
+
+  // State for the hover and pinned tooltip markers
+  const [hoverInfo, setHoverInfo] = useState<HoverPoint | null>(null)
+  const [pinnedInfo, setPinnedInfo] = useState<HoverPoint | null>(null)
+
+  // Mesh data state.
+  // TODO: would be nice to be able to dynamically load different mesh data sets.
   const { X, Y, Z, zMin, zMax } = useMemo(() => {
     const data = generateMeshData(-2, 2, -2, 2, 100)
 
@@ -320,7 +336,8 @@ function App() {
   // Convert percentage to actual z value
   const zCutoff = zMin + (zCutoffPercent / 100) * (zMax - zMin)
 
-  // Original mesh vertices + z-cutoff intersection points for hover picking
+  // A set of the original mesh vertices + z-cutoff intersection points for creating a
+  // layer of hover target points
   const hoverVertices = useMemo(() => {
     const rows = X.length
     const cols = X[0].length
@@ -400,13 +417,13 @@ function App() {
     [setGradients]
   )
 
-  // Fill typed-array segment buffers (recomputed when cutoff or gradients change)
+  // A collection of buffers representing the graph wireframe, with colors and cutoffs calculated.
   const segmentBuffers = useMemo(
     () => fillSegmentBuffers(X, Y, Z, zCutoff, zMin, zMax, gradients),
     [X, Y, Z, zCutoff, zMin, zMax, gradients]
   )
 
-  // Create axis lines at the edges of the bounding box
+  // Set of edges representing the graph axes, positioned at the edges of the bounding box.
   const axisLines: AxisLine[] = useMemo(() => {
     const xMin = -2, xMax = 2
     const yMin = -2, yMax = 2
@@ -430,6 +447,7 @@ function App() {
     ]
   }, [zMin, zMax])
 
+  // set of edges representing the currently highlighted lines
   const highlightBuffers = useMemo(() => {
     if (highlightedEdges.size === 0) return null
     const src = segmentBuffers
@@ -453,6 +471,7 @@ function App() {
     return { sourcePositions: sp, targetPositions: tp, colors: c, count: n }
   }, [segmentBuffers, highlightedEdges])
 
+  // The set of Deck.gl layers to render
   const layers = [
     new LineLayer({
       id: 'wireframe',
