@@ -3,6 +3,8 @@
 See title. This is a rough attempt to build some custom experimental data visualizations
 using Deck GL, and deploying them to cloudflare as an SPA just to see how it goes.
 
+[link to the site example](https://data-visualization-experiments.cwrmcolin.workers.dev/?gradients={%22xBelow%22:{%22high%22:[220,0.6,0.55,255],%22low%22:[220,0.7,0.25,255]},%22xAbove%22:{%22high%22:[360,0.97,0.75,255],%22low%22:[27,0.5,0.45,255]},%22yBelow%22:{%22high%22:[10,0.75,0.5,255],%22low%22:[0,0.7,0.3,255]},%22yAbove%22:{%22high%22:[40,0.7,0.7,255],%22low%22:[30,0.8,0.45,255]}}&zCutoff=40)
+
 ## React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
